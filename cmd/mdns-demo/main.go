@@ -31,7 +31,7 @@ import (
 	"syscall"
 	"time"
 
-	mdns "mdns"
+	mdns "github.com/topcheer/mdns"
 )
 
 func main() {

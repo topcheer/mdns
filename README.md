@@ -1,22 +1,17 @@
-# mDNS - Go Multicast DNS (RFC 6762)
+# mdns — Go Multicast DNS (RFC 6762)
 
-A complete from-scratch implementation of [Multicast DNS (RFC 6762)](https://datatracker.ietf.org/doc/html/rfc6762)
-in Go, with no third-party mDNS library dependencies. Only the Go standard library is used.
+[![Go Reference](https://pkg.go.dev/badge/github.com/topcheer/mdns.svg)](https://pkg.go.dev/github.com/topcheer/mdns)
+![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8)
+![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-## Features
+A complete from-scratch implementation of [Multicast DNS (RFC 6762)](https://datatracker.ietf.org/doc/html/rfc6762) in Go. No third-party mDNS libraries — only the Go standard library.
 
-- **Full DNS wire format** — name encoding/decoding with compression pointers, all common RR types
-  (A, AAAA, PTR, SRV, TXT, NSEC, CNAME), message pack/unpack
-- **Cross-platform multicast** — macOS, Linux, Windows (amd64 + arm64)
-- **Service registration** with probing, announcing, and goodbye (RFC 6762 §8)
-- **Service browsing** with PTR/SRV/TXT/A resolution and live add/remove events
-- **Host resolution** via one-shot mDNS queries
-- **Record cache** with TTL-based expiry and cache-flush semantics (§10)
-- **Known-Answer Suppression** (§7.1) and response delay randomization (§6)
-- **Legacy unicast query** support (§6.7)
-- **Conflict detection** for registered records (§8.2)
-- **DNS-SD service enumeration** via `_services._dns-sd._udp.local.`
-- Configurable port (default: **53533**)
+## Install
+
+```bash
+go get github.com/topcheer/mdns
+```
 
 ## Quick Start
 
@@ -27,7 +22,7 @@ package main
 
 import (
     "fmt"
-    "mdns"
+    "github.com/topcheer/mdns"
 )
 
 func main() {
@@ -42,8 +37,8 @@ func main() {
         Text: []string{"path=/", "version=1.0"},
     })
 
-    // Server is now advertising on the network.
-    select {} // block forever
+    fmt.Println("Service registered. Press Ctrl-C to stop.")
+    select {}
 }
 ```
 
@@ -61,9 +56,10 @@ defer browser.Stop()
 for ev := range events {
     switch ev.Action {
     case mdns.EventAdd:
-        fmt.Printf("Found: %s\n", ev.Instance)
+        fmt.Printf("Found: %s at %s:%d\n",
+            ev.Instance.Name, ev.Instance.Host, ev.Instance.Port)
     case mdns.EventRemove:
-        fmt.Printf("Lost: %s\n", ev.Instance)
+        fmt.Printf("Lost: %s\n", ev.Instance.Name)
     }
 }
 ```
@@ -71,96 +67,170 @@ for ev := range events {
 ### Resolve a hostname
 
 ```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
 ips, _ := srv.ResolveHost(ctx, "myhost.local.")
+for _, ip := range ips {
+    fmt.Println(ip)
+}
 ```
 
-### Run the example app
+### One-shot lookup (no persistent server)
 
-```bash
-# Register and browse simultaneously (two terminals)
-go run ./cmd/mdns-example -mode register -name "MyService" -type "_test._tcp" -svc-port 8080
-go run ./cmd/mdns-example -mode browse -type "_test._tcp"
+```go
+// Resolve a hostname without managing a Server
+ips, _ := mdns.LookupHost(ctx, "myhost.local.", 0)
 
-# Resolve a hostname
-go run ./cmd/mdns-example -mode resolve -resolve "myhost.local."
+// Discover services without managing a Server
+instances, _ := mdns.LookupService(ctx, "_http._tcp", 0)
 ```
 
 ## Configuration
 
 ```go
 config := mdns.Config{
-    Port:      53533,           // configurable mDNS port (default 53533)
-    Domain:    "local.",        // mDNS domain suffix
-    EnableIPv6: true,           // enable IPv6 multicast
-    HostName:  "myhost",        // hostname to advertise
-    LogFunc:   func(f string, a ...any) { log.Printf(f, a...) },
+    Port:       mdns.DefaultPort,  // 53533 (configurable)
+    Domain:     "local.",          // mDNS domain suffix
+    EnableIPv6: false,             // enable IPv6 multicast
+    HostName:   "myhost",          // empty = system hostname
+    LogFunc:    func(f string, a ...any) { log.Printf(f, a...) },
 }
 ```
 
-## Architecture
+## API Reference
 
-```
-mdns/
-├── go.mod                  # Module definition
-├── config.go               # Config, ServiceInstance, ServiceInstanceInfo types
-├── dns_name.go             # DNS name encoding/decoding with compression
-├── dns_rr.go               # Resource record types (A, AAAA, PTR, SRV, TXT, NSEC)
-├── dns_message.go          # DNS message pack/unpack
-├── multicast.go            # Cross-platform multicast connection (common)
-├── multicast_unix.go       # macOS/Linux socket options (SO_REUSEADDR/PORT, TTL, loop)
-├── multicast_windows.go    # Windows socket options
-├── sockopts_darwin.go      # macOS SO_REUSEPORT constant
-├── sockopts_linux.go       # Linux SO_REUSEPORT constant
-├── sockopts_windows.go     # Windows no-op
-├── cache.go                # Record cache with TTL expiry and cache-flush
-├── server.go               # Core mDNS engine (query/response/probe/conflict)
-├── service.go              # Service registration, probing, announcing
-├── browser.go              # Service browsing and discovery
-├── mdns.go                 # Public API (LookupHost, LookupService)
-├── dns_test.go             # DNS wire format tests
-├── cache_test.go           # Cache tests
-├── integration_test.go     # Full mDNS protocol tests
-└── cmd/mdns-example/       # Example CLI application
-```
+### Core Types
 
-### Key Design Decisions
+| Type | Description |
+|---|---|
+| [`Server`](https://pkg.go.dev/github.com/topcheer/mdns#Server) | Core mDNS engine. Create with `NewServer()`. |
+| [`Config`](https://pkg.go.dev/github.com/topcheer/mdns#Config) | Server configuration. Use `DefaultConfig()` for defaults. |
+| [`ServiceInstance`](https://pkg.go.dev/github.com/topcheer/mdns#ServiceInstance) | Service to register via `Server.RegisterService()`. |
+| [`Browser`](https://pkg.go.dev/github.com/topcheer/mdns#Browser) | Service discovery via `Server.Browse()`. |
+| [`ServiceInstanceInfo`](https://pkg.go.dev/github.com/topcheer/mdns#ServiceInstanceInfo) | Resolved service details (name, host, port, IPs, TXT). |
+| [`ServiceEvent`](https://pkg.go.dev/github.com/topcheer/mdns#ServiceEvent) | Event delivered to Browser subscribers. |
 
-- **No third-party deps**: Only Go standard library (`net`, `syscall`, `encoding/binary`)
-- **Platform-specific socket options** via build tags (`//go:build darwin`, `linux`, `windows`)
-- **Thread-safe**: All shared state protected by mutexes, race-detector clean
-- **Event-driven**: Browser events delivered via channels for easy integration
+### Key Methods
+
+| Method | Description |
+|---|---|
+| `NewServer(Config)` | Create a new mDNS server |
+| `Server.Start()` | Begin listening and background tasks |
+| `Server.RegisterService(*ServiceInstance)` | Register + probe + announce a service |
+| `Server.UnregisterService(*ServiceInstance)` | Unregister + send goodbye |
+| `Server.Browse(serviceType)` | Create a service browser |
+| `Server.ResolveHost(ctx, host)` | Resolve hostname to IP addresses |
+| `Browser.Start()` | Begin browsing, returns event channel |
+| `Browser.Stop()` | Stop browsing |
+| `Browser.Instances()` | Get all currently known instances |
+| `Server.Cache()` | Access the record cache |
+| `Server.HostIPs()` | Get this host's IP addresses |
+| `LookupHost(ctx, host, port)` | One-shot hostname resolution |
+| `LookupService(ctx, type, port)` | One-shot service discovery |
 
 ## RFC 6762 Compliance
 
 | Feature | Section | Status |
 |---|---|---|
-| Multicast Address & Port | §3, §6.1 | IPv4 + IPv6, configurable port |
-| Probing | §8.1 | 3 probes × 250ms + random delay |
-| Simultaneous Probe Tiebreaking | §8.2 | Conflict detection |
-| Announcing | §8.3 | Double-announce after probe |
-| Goodbye | §10.1 | TTL=0 goodbye packets |
-| Cache-Flush Bit | §10.2 | Flushes stale records |
-| Known-Answer Suppression | §7.1 | Suppresses redundant responses |
-| Response Delay | §6 | Random 20-120ms delay |
-| Legacy Unicast Queries | §6.7 | Immediate unicast response |
-| Additional Records | §6.2 | SRV/TXT/A in PTR responses |
-| DNS-SD Enumeration | RFC 6763 | `_services._dns-sd._udp` PTR |
+| `.local.` domain, multicast addresses 224.0.0.251 / FF02::FB | §3 | ✅ |
+| One-Shot query with QU bit (unicast response) | §5.1, §5.4 | ✅ |
+| Exponential backoff browsing (1s → 2s → ... → 1h) | §5.2 | ✅ |
+| Cache maintenance queries at 80% TTL | §5.2 | ✅ |
+| Reverse address mapping (IPv4 `.in-addr.arpa.` + IPv6 `.ip6.arpa.`) | §4 | ✅ |
+| Unique record immediate response (<10ms) | §6 | ✅ |
+| Shared record random response delay (20–120ms) | §6 | ✅ |
+| NSEC negative responses | §6.1 | ✅ |
+| Additional records in PTR responses (SRV/TXT/A) | §6.2 | ✅ |
+| Multicast rate limiting (1s per record) | §6 | ✅ |
+| Legacy unicast query support | §6.7 | ✅ |
+| Known-Answer Suppression with TTL ≥50% check | §7.1 | ✅ |
+| TC bit multipacket known-answer | §7.2 | ✅ |
+| Probing (3 × 250ms + random delay) | §8.1 | ✅ |
+| Simultaneous probe tiebreaking (lexicographic rdata) | §8.2 | ✅ |
+| Hostname A/AAAA probing | §8.1 | ✅ |
+| Announcing (double-announce) | §8.3 | ✅ |
+| Conflict resolution with auto-rename | §9 | ✅ |
+| Goodbye (TTL=0) | §10.1 | ✅ |
+| Cache-flush bit | §10.2 | ✅ |
+| Passive observation of failures | §10.5 | ✅ |
+| Source address verification (local subnet) | §11 | ✅ |
+| Packet validation (opcode=0, rcode=0) | §18.14 | ✅ |
+| DNS-SD service enumeration (`_services._dns-sd._udp`) | RFC 6763 | ✅ |
+
+### Design Choices
+
+- **IPv4 priority**: Service advertisement always puts IPv4 addresses first.
+- **Same-machine multi-instance**: Each instance auto-generates a unique hostname.
+- **Configurable port**: Default 53533 (standard mDNS uses 5353).
+
+## Demo Application
+
+The `cmd/mdns-demo` binary is a zero-config tool that registers a service and discovers peers:
+
+```bash
+# Build
+go build -o mdns-demo ./cmd/mdns-demo
+
+# Run (just works — registers + browses automatically)
+./mdns-demo
+
+# Custom service
+./mdns-demo -service _http._tcp -port 8080 -name "My Server"
+
+# Verbose logging
+./mdns-demo -log
+```
+
+Run on multiple terminals or machines — they discover each other automatically.
+
+Pre-built binaries for all platforms are in [Releases](../../releases).
+
+## Architecture
+
+```
+mdns/
+├── doc.go                  # Package documentation
+├── config.go               # Config, ServiceInstance, ServiceInstanceInfo
+├── dns_name.go             # DNS name encoding/decoding (RFC 1035 compression)
+├── dns_rr.go               # Resource records: A, AAAA, PTR, SRV, TXT, NSEC
+├── dns_message.go          # DNS message pack/unpack
+├── multicast.go            # Cross-platform multicast connection
+├── multicast_unix.go       # macOS/Linux socket setup
+├── multicast_windows.go    # Windows socket setup
+├── sockopts_{darwin,linux,windows}.go  # Platform SO_REUSEPORT
+├── cache.go                # Record cache with TTL + cache-flush
+├── server.go               # Core engine: query/response/probe/conflict
+├── service.go              # Registration: probing, announcing, goodbye
+├── browser.go              # Discovery: browse, backoff, known-answer, maintenance
+├── mdns.go                 # Public API: NewServer, LookupHost, LookupService
+├── *_test.go               # Unit + integration tests (24 tests)
+└── cmd/mdns-demo/          # Zero-config demo application
+```
 
 ## Testing
 
 ```bash
-# Unit tests
-go test -short ./...
-
-# Full test suite (includes multicast integration tests)
+# Unit + integration tests with race detector
 go test -race ./...
 
-# Cross-platform compilation check
-GOOS=darwin go build ./...
-GOOS=linux go build ./...
-GOOS=windows go build ./...
+# Run with verbose output
+go test -v -race ./...
+```
+
+All 24 tests pass with the `-race` flag enabled.
+
+## Cross-Platform Compilation
+
+```bash
+GOOS=darwin  GOARCH=arm64 go build -o mdns-demo-darwin-arm64  ./cmd/mdns-demo
+GOOS=darwin  GOARCH=amd64 go build -o mdns-demo-darwin-amd64  ./cmd/mdns-demo
+GOOS=linux   GOARCH=amd64 go build -o mdns-demo-linux-amd64   ./cmd/mdns-demo
+GOOS=linux   GOARCH=arm64 go build -o mdns-demo-linux-arm64   ./cmd/mdns-demo
+GOOS=windows GOARCH=amd64 go build -o mdns-demo-windows-amd64 ./cmd/mdns-demo
+GOOS=windows GOARCH=arm64 go build -o mdns-demo-windows-arm64 ./cmd/mdns-demo
 ```
 
 ## License
 
-MIT
+[MIT](LICENSE)
