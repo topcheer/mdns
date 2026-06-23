@@ -4,7 +4,7 @@
 ![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8)
 ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Created by](https://img.shields.io/badge/created%20by-ggcode-purple)
+[![Created by](https://img.shields.io/badge/created%20by-ggcode-purple)](https://github.com/topcheer/ggcode)
 
 A complete from-scratch implementation of [Multicast DNS (RFC 6762)](https://datatracker.ietf.org/doc/html/rfc6762) in Go. No third-party mDNS libraries — only the Go standard library.
 
