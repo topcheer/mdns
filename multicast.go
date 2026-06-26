@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 )
 
 // Default IPv4 and IPv6 mDNS multicast addresses (RFC 6762 §3).
@@ -61,15 +61,10 @@ func NewMulticastConn(port int, enableIPv6 bool, interfaces []string) (*Multicas
 		return nil, fmt.Errorf("mdns: failed to join IPv4 multicast group: %w", err)
 	}
 
-	// Set the outgoing multicast interface (IP_MULTICAST_IF) only when the
-	// caller has explicitly specified interfaces.  Without an explicit list
-	// we leave the OS routing table in charge, which is the correct default
-	// on macOS / Linux.  On Windows the user should specify Interfaces in
-	// Config to avoid the default route selecting a virtual adapter
-	// (Docker, Hyper-V, WSL2, VPN).
-	if len(interfaces) > 0 {
-		_ = setOutgoingInterface(v4conn, interfaces)
-	}
+	// Always set the outgoing multicast interface (IP_MULTICAST_IF).
+	// This is critical on Windows where the routing table may select a
+	// virtual adapter (Docker, Hyper-V, WSL2, VPN) instead of the LAN.
+	_ = setOutgoingInterface(v4conn, interfaces)
 
 	mc := &MulticastConn{
 		v4conn:  v4conn,
@@ -312,24 +307,63 @@ func firstIPv4(iface net.Interface) net.IP {
 	return nil
 }
 
-// defaultRouteIPv4 detects the IPv4 address of the default-route interface
-// by opening a UDP "connection" to a public address. No packets are actually
-// sent — Dial just sets up the socket and lets the kernel pick the source
-// address based on the routing table.
+// defaultRouteIPv4 detects the IPv4 address of the best LAN interface.
+// It prefers physical interfaces with private addresses and avoids known
+// virtual adapters (Docker, WSL, Hyper-V, VPN, Radmin, Meta, etc.).
+// This is more reliable than a UDP dial to a public address because VPNs
+// capture the default route.
 func defaultRouteIPv4() net.IP {
-	// Use a non-routable documentation address (RFC 5737) — the kernel
-	// still uses it for route lookup but no packets will ever be sent
-	// because we never Write on this socket.
-	conn, err := net.DialTimeout("udp4", "203.0.113.1:80", 2*time.Second)
-	if err != nil {
-		return nil
+	var bestIP net.IP
+	var bestScore int
+	for _, iface := range activeMulticastInterfacesFor(nil) {
+		ip4 := firstIPv4(iface)
+		if ip4 == nil || ip4.IsLoopback() {
+			continue
+		}
+		score := scoreInterface(iface.Name, ip4)
+		if score > bestScore {
+			bestScore = score
+			bestIP = ip4
+		}
 	}
-	defer conn.Close()
-	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok || localAddr == nil {
-		return nil
+	return bestIP
+}
+
+// scoreInterface ranks interfaces: physical LAN adapters score highest,
+// virtual adapters (Docker, WSL, VPN, etc.) score 0.
+func scoreInterface(name string, ip net.IP) int {
+	nameLower := strings.ToLower(name)
+
+	// Known virtual / tunnel adapters — always skip.
+	virtualPrefixes := []string{
+		"docker", "wsl", "vethernet", "hyper-v", "tap", "tun",
+		"radmin", "meta", "hamachi", "zerotier", "tailscale",
+		"wireguard", "openvpn", "ppp", "isatap", "teredo",
+		"6to4", "loopback pseudo", "vpn",
 	}
-	return localAddr.IP.To4()
+	for _, p := range virtualPrefixes {
+		if strings.Contains(nameLower, p) {
+			return 0
+		}
+	}
+
+	score := 1 // base score for any non-virtual interface
+
+	// Prefer private LAN addresses (RFC 1918).
+	if ip.IsPrivate() {
+		score += 10
+	}
+
+	// Prefer common physical adapter name patterns on Windows.
+	physicalHints := []string{"ethernet", "wi-fi", "wifi", "wlan", "以太网", "无线", "local area"}
+	for _, h := range physicalHints {
+		if strings.Contains(nameLower, h) {
+			score += 5
+			break
+		}
+	}
+
+	return score
 }
 
 // joinGroups joins the IPv4 multicast group on all active (optionally filtered) interfaces.

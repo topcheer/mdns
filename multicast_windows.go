@@ -94,13 +94,9 @@ func setOutgoingInterfaceV4(fd uintptr, ifaceIP net.IP) error {
 	if i4 == nil {
 		return fmt.Errorf("mdns: not an IPv4 interface address: %s", ifaceIP)
 	}
-	// IP_MULTICAST_IF takes a struct in_addr (4 bytes, network byte order).
-	// SetsockoptIPMreq serialises the IPMreq struct directly, so the Interface
-	// field is written as-is in network byte order — identical to the Unix
-	// implementation.  Using SetsockoptInt would reverse the bytes on the
-	// little-endian x86 host and bind the wrong address.
-	mreq := syscall.IPMreq{
-		Interface: [4]byte{i4[0], i4[1], i4[2], i4[3]},
-	}
-	return syscall.SetsockoptIPMreq(syscall.Handle(fd), syscall.IPPROTO_IP, winIP_MULTICAST_IF, &mreq)
+	// IP_MULTICAST_IF expects a struct in_addr (exactly 4 bytes, network byte
+	// order).  We must NOT use SetsockoptIPMreq (8 bytes) — Windows rejects it
+	// with WSAEFAULT.  Use the raw Setsockopt with a 4-byte buffer instead.
+	buf := [4]byte{i4[0], i4[1], i4[2], i4[3]}
+	return syscall.Setsockopt(syscall.Handle(fd), syscall.IPPROTO_IP, winIP_MULTICAST_IF, &buf[0], 4)
 }
