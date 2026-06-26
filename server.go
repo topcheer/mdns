@@ -561,6 +561,9 @@ func (s *Server) handleLegacyQuery(msg *Message, from *net.UDPAddr) {
 			s.log("failed to pack legacy response: %v", err)
 			return
 		}
+		if s.conn == nil {
+			return
+		}
 		if _, err := s.conn.WriteTo(data, from); err != nil {
 			s.log("failed to send legacy response: %v", err)
 		}
@@ -734,6 +737,9 @@ func (s *Server) sendResponseWithAdditional(answers, additionals []*ResourceReco
 		s.log("failed to pack response: %v", err)
 		return
 	}
+	if s.conn == nil {
+		return
+	}
 	if to == nil {
 		if err := s.conn.WriteMulticast(data); err != nil {
 			s.log("failed to send multicast response: %v", err)
@@ -758,6 +764,9 @@ func (s *Server) sendResponseUnicast(records []*ResourceRecord, to *net.UDPAddr)
 		s.log("failed to pack unicast response: %v", err)
 		return
 	}
+	if s.conn == nil {
+		return
+	}
 	if _, err := s.conn.WriteTo(data, to); err != nil {
 		s.log("failed to send unicast response: %v", err)
 	}
@@ -780,6 +789,9 @@ func (s *Server) sendGoodbye(records []*ResourceRecord) {
 	data, err := resp.Pack()
 	if err != nil {
 		s.log("failed to pack goodbye: %v", err)
+		return
+	}
+	if s.conn == nil {
 		return
 	}
 	if err := s.conn.WriteMulticast(data); err != nil {
@@ -844,6 +856,9 @@ func (s *Server) probeHostRecords() {
 	for i := 0; i < int(DefaultProbeCount); i++ {
 		data, err := probeMsg.Pack()
 		if err != nil {
+			return
+		}
+		if s.conn == nil {
 			return
 		}
 		if err := s.conn.WriteMulticast(data); err != nil {
