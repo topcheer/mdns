@@ -42,7 +42,11 @@ type MulticastConn struct {
 
 // NewMulticastConn creates a multicast connection listening on the given port.
 // It creates an IPv4 socket and optionally an IPv6 socket.
-func NewMulticastConn(port int, enableIPv6 bool) (*MulticastConn, error) {
+//
+// If interfaces is non-empty, only the named interfaces are used for multicast
+// group membership and outgoing traffic; otherwise all active multicast
+// interfaces are used.
+func NewMulticastConn(port int, enableIPv6 bool, interfaces []string) (*MulticastConn, error) {
 	groupV4 := &net.UDPAddr{IP: IPv4MulticastAddr, Port: port}
 
 	v4conn, err := listenMulticast("udp4", port)
@@ -50,10 +54,20 @@ func NewMulticastConn(port int, enableIPv6 bool) (*MulticastConn, error) {
 		return nil, fmt.Errorf("mdns: failed to create IPv4 multicast socket: %w", err)
 	}
 
-	// Join multicast group on all active interfaces.
-	if err := joinGroups(v4conn, IPv4MulticastAddr); err != nil {
+	// Join multicast group on all active (optionally filtered) interfaces.
+	if err := joinGroups(v4conn, IPv4MulticastAddr, interfaces); err != nil {
 		v4conn.Close()
 		return nil, fmt.Errorf("mdns: failed to join IPv4 multicast group: %w", err)
+	}
+
+	// Set the outgoing multicast interface (IP_MULTICAST_IF) only when the
+	// caller has explicitly specified interfaces.  Without an explicit list
+	// we leave the OS routing table in charge, which is the correct default
+	// on macOS / Linux.  On Windows the user should specify Interfaces in
+	// Config to avoid the default route selecting a virtual adapter
+	// (Docker, Hyper-V, WSL2, VPN).
+	if len(interfaces) > 0 {
+		_ = setOutgoingInterface(v4conn, interfaces)
 	}
 
 	mc := &MulticastConn{
@@ -68,7 +82,7 @@ func NewMulticastConn(port int, enableIPv6 bool) (*MulticastConn, error) {
 	if enableIPv6 {
 		v6conn, err := listenMulticast("udp6", port)
 		if err == nil {
-			if err := joinGroupsV6(v6conn, IPv6MulticastAddr); err == nil {
+			if err := joinGroupsV6(v6conn, IPv6MulticastAddr, interfaces); err == nil {
 				mc.v6conn = v6conn
 			} else {
 				v6conn.Close()
@@ -197,13 +211,17 @@ func (mc *MulticastConn) Close() error {
 	return nil
 }
 
-// activeMulticastInterfaces returns all active, multicast-capable, non-loopback
-// interfaces that have at least one IPv4 address.
-func activeMulticastInterfaces() []net.Interface {
+// activeMulticastInterfacesFor returns active, multicast-capable interfaces.
+// If names is non-empty, only interfaces whose Name is in names are returned.
+func activeMulticastInterfacesFor(names []string) []net.Interface {
 	var result []net.Interface
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return result
+	}
+	nameSet := make(map[string]bool, len(names))
+	for _, n := range names {
+		nameSet[n] = true
 	}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 {
@@ -216,13 +234,48 @@ func activeMulticastInterfaces() []net.Interface {
 		if err != nil || len(addrs) == 0 {
 			continue
 		}
+		if len(nameSet) > 0 && !nameSet[iface.Name] {
+			continue
+		}
 		result = append(result, iface)
 	}
 	return result
 }
 
-// joinGroups joins the IPv4 multicast group on all active interfaces.
-func joinGroups(conn *net.UDPConn, group net.IP) error {
+// setOutgoingInterface sets IP_MULTICAST_IF to the first suitable interface.
+// This is critical on Windows where the default route may select a virtual
+// adapter instead of the physical LAN adapter.
+func setOutgoingInterface(conn *net.UDPConn, interfaces []string) error {
+	rawConn, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	for _, iface := range activeMulticastInterfacesFor(interfaces) {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			ip4 := ipNet.IP.To4()
+			if ip4 == nil || ip4.IsLoopback() {
+				continue
+			}
+			var serr error
+			rawConn.Control(func(fd uintptr) {
+				serr = setOutgoingInterfaceV4(fd, ip4)
+			})
+			return serr
+		}
+	}
+	return nil
+}
+
+// joinGroups joins the IPv4 multicast group on all active (optionally filtered) interfaces.
+func joinGroups(conn *net.UDPConn, group net.IP, interfaces []string) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -230,7 +283,7 @@ func joinGroups(conn *net.UDPConn, group net.IP) error {
 
 	var lastErr error
 	joined := false
-	for _, iface := range activeMulticastInterfaces() {
+	for _, iface := range activeMulticastInterfacesFor(interfaces) {
 		addrs, err := iface.Addrs()
 		if err != nil {
 			continue
@@ -261,8 +314,8 @@ func joinGroups(conn *net.UDPConn, group net.IP) error {
 	return nil
 }
 
-// joinGroupsV6 joins the IPv6 multicast group on all active interfaces.
-func joinGroupsV6(conn *net.UDPConn, group net.IP) error {
+// joinGroupsV6 joins the IPv6 multicast group on all active (optionally filtered) interfaces.
+func joinGroupsV6(conn *net.UDPConn, group net.IP, interfaces []string) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
@@ -270,7 +323,7 @@ func joinGroupsV6(conn *net.UDPConn, group net.IP) error {
 
 	var lastErr error
 	joined := false
-	for _, iface := range activeMulticastInterfaces() {
+	for _, iface := range activeMulticastInterfacesFor(interfaces) {
 		var jerr error
 		rawConn.Control(func(fd uintptr) {
 			jerr = joinMulticastGroupV6(fd, group, iface.Index)

@@ -79,3 +79,17 @@ func joinMulticastGroupV6(fd uintptr, group net.IP, ifaceIndex int) error {
 	}
 	return syscall.SetsockoptIPv6Mreq(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_JOIN_GROUP, &mreq)
 }
+
+// setOutgoingInterfaceV4 sets the outgoing multicast interface (IP_MULTICAST_IF).
+// On Unix, this helps ensure multicast packets go through the intended adapter
+// rather than relying on the routing table's default route.
+func setOutgoingInterfaceV4(fd uintptr, ifaceIP net.IP) error {
+	i4 := ifaceIP.To4()
+	if i4 == nil {
+		return fmt.Errorf("mdns: not an IPv4 interface address: %s", ifaceIP)
+	}
+	mreq := syscall.IPMreq{
+		Interface: [4]byte{i4[0], i4[1], i4[2], i4[3]},
+	}
+	return syscall.SetsockoptIPMreq(int(fd), syscall.IPPROTO_IP, syscall.IP_MULTICAST_IF, &mreq)
+}

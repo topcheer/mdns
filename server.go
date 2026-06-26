@@ -96,7 +96,7 @@ func NewServer(config Config) (*Server, error) {
 
 // Start begins listening for mDNS packets and starts all background tasks.
 func (s *Server) Start() error {
-	conn, err := NewMulticastConn(s.config.Port, s.config.EnableIPv6)
+	conn, err := NewMulticastConn(s.config.Port, s.config.EnableIPv6, s.config.Interfaces)
 	if err != nil {
 		return fmt.Errorf("mdns: failed to create multicast connection: %w", err)
 	}

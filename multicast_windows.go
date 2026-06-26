@@ -11,12 +11,13 @@ import (
 // Windows multicast socket option constants (from winsock2.h / ws2ipdef.h).
 // These are not defined in Go's syscall package for Windows.
 const (
-	winIP_MULTICAST_TTL   = 10
-	winIP_MULTICAST_LOOP  = 11
-	winIP_ADD_MEMBERSHIP  = 12
-	winIPV6_MULTICAST_HOPS = 10 // IPV6_MULTICAST_HOPS
-	winIPV6_MULTICAST_LOOP = 11 // IPV6_MULTICAST_LOOP
-	winIPV6_ADD_MEMBERSHIP = 12 // IPV6_JOIN_GROUP
+	winIP_MULTICAST_IF      = 9  // IP_MULTICAST_IF
+	winIP_MULTICAST_TTL     = 10
+	winIP_MULTICAST_LOOP    = 11
+	winIP_ADD_MEMBERSHIP    = 12
+	winIPV6_MULTICAST_HOPS  = 10 // IPV6_MULTICAST_HOPS
+	winIPV6_MULTICAST_LOOP  = 11 // IPV6_MULTICAST_LOOP
+	winIPV6_ADD_MEMBERSHIP  = 12 // IPV6_JOIN_GROUP
 )
 
 // applyMulticastOptions sets socket options needed for mDNS on Windows.
@@ -82,4 +83,24 @@ func joinMulticastGroupV6(fd uintptr, group net.IP, ifaceIndex int) error {
 		Interface: uint32(ifaceIndex),
 	}
 	return syscall.SetsockoptIPv6Mreq(syscall.Handle(fd), syscall.IPPROTO_IPV6, winIPV6_ADD_MEMBERSHIP, &mreq)
+}
+
+// setOutgoingInterfaceV4 sets the outgoing multicast interface (IP_MULTICAST_IF).
+// On Windows, this is critical: without it, the OS uses the routing table to
+// pick the outgoing interface, which often selects a virtual adapter (Docker,
+// Hyper-V, WSL2, VPN) instead of the physical LAN adapter.
+func setOutgoingInterfaceV4(fd uintptr, ifaceIP net.IP) error {
+	i4 := ifaceIP.To4()
+	if i4 == nil {
+		return fmt.Errorf("mdns: not an IPv4 interface address: %s", ifaceIP)
+	}
+	// IP_MULTICAST_IF takes a struct in_addr (4 bytes, network byte order).
+	// SetsockoptIPMreq serialises the IPMreq struct directly, so the Interface
+	// field is written as-is in network byte order — identical to the Unix
+	// implementation.  Using SetsockoptInt would reverse the bytes on the
+	// little-endian x86 host and bind the wrong address.
+	mreq := syscall.IPMreq{
+		Interface: [4]byte{i4[0], i4[1], i4[2], i4[3]},
+	}
+	return syscall.SetsockoptIPMreq(syscall.Handle(fd), syscall.IPPROTO_IP, winIP_MULTICAST_IF, &mreq)
 }
