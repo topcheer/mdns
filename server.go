@@ -22,7 +22,7 @@ type Server struct {
 
 	mu       sync.RWMutex
 	services map[string]*registeredService // instance name -> service
-	browsers map[string]*Browser            // service type (lowercase) -> browser
+	browsers map[string]*Browser           // service type (lowercase) -> browser
 	hostName string
 	hostIPs  []net.IP
 
@@ -42,9 +42,9 @@ type Server struct {
 	localSubnets []*net.IPNet
 
 	// BUG-9: Passive observation — track queries for names we're interested in.
-	passiveMu     sync.Mutex
-	passiveSeen   map[string]int    // name -> query count
-	passiveLast   map[string]time.Time // name -> last query time
+	passiveMu   sync.Mutex
+	passiveSeen map[string]int       // name -> query count
+	passiveLast map[string]time.Time // name -> last query time
 }
 
 // registeredService tracks a service that has been registered with the server.
@@ -82,13 +82,13 @@ func NewServer(config Config) (*Server, error) {
 	}
 
 	s := &Server{
-		config:       config,
-		cache:        NewCache(),
-		services:     make(map[string]*registeredService),
-		browsers:     make(map[string]*Browser),
-		rateTracker:  make(map[string]time.Time),
-		passiveSeen:  make(map[string]int),
-		passiveLast:  make(map[string]time.Time),
+		config:      config,
+		cache:       NewCache(),
+		services:    make(map[string]*registeredService),
+		browsers:    make(map[string]*Browser),
+		rateTracker: make(map[string]time.Time),
+		passiveSeen: make(map[string]int),
+		passiveLast: make(map[string]time.Time),
 	}
 
 	return s, nil
@@ -103,7 +103,9 @@ func (s *Server) Start() error {
 	s.conn = conn
 
 	// Detect local IP addresses.
-	s.hostIPs = localIPs()
+	// Prefers the default-route interface to avoid advertising VPN/virtual
+	// adapter addresses (e.g. Docker, Hyper-V, WSL2, Radmin VPN).
+	s.hostIPs = localIPs(s.config.Interfaces)
 
 	// Detect local subnets for source address checking (RFC 6762 §11).
 	s.localSubnets = localSubnets()
@@ -944,15 +946,47 @@ func recordsConflict(a, b *ResourceRecord) bool {
 	return !recordsEqual(a, b)
 }
 
-// localIPs returns all non-loopback IPv4 (and optionally IPv6) addresses.
-func localIPs() []net.IP {
+// localIPs returns the local IP addresses for advertising.
+//
+// If interfaces is non-empty, only addresses on those interfaces are returned.
+// Otherwise, the default-route interface is auto-detected and its IP is
+// returned first, followed by addresses from other physical interfaces.
+// This avoids advertising VPN/virtual adapter addresses (Docker, Hyper-V,
+// WSL2, Radmin VPN, etc.) that are unreachable on the LAN.
+func localIPs(interfaces []string) []net.IP {
+	// If explicit interfaces are configured, return only their addresses.
+	if len(interfaces) > 0 {
+		return ipsForInterfaces(interfaces)
+	}
+
+	// Auto-detect: prefer the default-route interface.
+	if defaultIP := defaultRouteIPv4(); defaultIP != nil {
+		ips := []net.IP{defaultIP}
+		// Also include IPv6 addresses from the same interface for AAAA records.
+		return ips
+	}
+
+	// Fallback: all non-loopback addresses from active interfaces.
+	return ipsForInterfaces(nil)
+}
+
+// ipsForInterfaces returns all non-loopback addresses from the given interfaces.
+// If interfaces is empty/nil, all active interfaces are considered.
+func ipsForInterfaces(interfaces []string) []net.IP {
 	var ips []net.IP
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return ips
 	}
+	nameSet := make(map[string]bool, len(interfaces))
+	for _, n := range interfaces {
+		nameSet[n] = true
+	}
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		if len(nameSet) > 0 && !nameSet[iface.Name] {
 			continue
 		}
 		addrs, err := iface.Addrs()
@@ -1102,12 +1136,12 @@ func (s *Server) generateNSEC(name string, records []*ResourceRecord) *ResourceR
 		types = append(types, t)
 	}
 	return &ResourceRecord{
-		Name:       name,
-		Type:       TypeNSEC,
-		Class:      ClassIN,
-		TTL:        uint32(DefaultOtherTTL / time.Second),
-		CacheFlush: true,
-		NextDomain: name,
+		Name:        name,
+		Type:        TypeNSEC,
+		Class:       ClassIN,
+		TTL:         uint32(DefaultOtherTTL / time.Second),
+		CacheFlush:  true,
+		NextDomain:  name,
 		TypeBitMaps: types,
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 // Default IPv4 and IPv6 mDNS multicast addresses (RFC 6762 §3).
@@ -242,28 +243,46 @@ func activeMulticastInterfacesFor(names []string) []net.Interface {
 	return result
 }
 
-// setOutgoingInterface sets IP_MULTICAST_IF to the first suitable interface.
+// setOutgoingInterface sets IP_MULTICAST_IF to the best interface.
 // This is critical on Windows where the default route may select a virtual
-// adapter instead of the physical LAN adapter.
+// adapter (Docker, Hyper-V, WSL2, VPN) instead of the physical LAN adapter.
+//
+// Interface selection priority:
+//  1. If interfaces is non-empty, use the first matching one.
+//  2. Otherwise, prefer the default-route interface (detected via a UDP "dial"
+//     to a public address — no actual packets are sent).
+//  3. Fall back to the first non-loopback IPv4 on an active multicast interface.
 func setOutgoingInterface(conn *net.UDPConn, interfaces []string) error {
 	rawConn, err := conn.SyscallConn()
 	if err != nil {
 		return err
 	}
-	for _, iface := range activeMulticastInterfacesFor(interfaces) {
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
+
+	// If explicit interfaces are configured, use the first one with an IPv4 addr.
+	if len(interfaces) > 0 {
+		for _, iface := range activeMulticastInterfacesFor(interfaces) {
+			if ip4 := firstIPv4(iface); ip4 != nil {
+				var serr error
+				rawConn.Control(func(fd uintptr) {
+					serr = setOutgoingInterfaceV4(fd, ip4)
+				})
+				return serr
+			}
 		}
-		for _, addr := range addrs {
-			ipNet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip4 := ipNet.IP.To4()
-			if ip4 == nil || ip4.IsLoopback() {
-				continue
-			}
+	}
+
+	// Auto-detect: prefer the default-route interface.
+	if ip4 := defaultRouteIPv4(); ip4 != nil {
+		var serr error
+		rawConn.Control(func(fd uintptr) {
+			serr = setOutgoingInterfaceV4(fd, ip4)
+		})
+		return serr
+	}
+
+	// Fallback: first non-loopback IPv4 from any active multicast interface.
+	for _, iface := range activeMulticastInterfacesFor(nil) {
+		if ip4 := firstIPv4(iface); ip4 != nil && !ip4.IsLoopback() {
 			var serr error
 			rawConn.Control(func(fd uintptr) {
 				serr = setOutgoingInterfaceV4(fd, ip4)
@@ -272,6 +291,45 @@ func setOutgoingInterface(conn *net.UDPConn, interfaces []string) error {
 		}
 	}
 	return nil
+}
+
+// firstIPv4 returns the first non-loopback IPv4 address on the interface.
+func firstIPv4(iface net.Interface) net.IP {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		ip4 := ipNet.IP.To4()
+		if ip4 != nil && !ip4.IsLoopback() {
+			return ip4
+		}
+	}
+	return nil
+}
+
+// defaultRouteIPv4 detects the IPv4 address of the default-route interface
+// by opening a UDP "connection" to a public address. No packets are actually
+// sent — Dial just sets up the socket and lets the kernel pick the source
+// address based on the routing table.
+func defaultRouteIPv4() net.IP {
+	// Use a non-routable documentation address (RFC 5737) — the kernel
+	// still uses it for route lookup but no packets will ever be sent
+	// because we never Write on this socket.
+	conn, err := net.DialTimeout("udp4", "203.0.113.1:80", 2*time.Second)
+	if err != nil {
+		return nil
+	}
+	defer conn.Close()
+	localAddr, ok := conn.LocalAddr().(*net.UDPAddr)
+	if !ok || localAddr == nil {
+		return nil
+	}
+	return localAddr.IP.To4()
 }
 
 // joinGroups joins the IPv4 multicast group on all active (optionally filtered) interfaces.

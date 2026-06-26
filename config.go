@@ -48,8 +48,8 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Port:    DefaultPort,
-		Domain:  DefaultDomain,
+		Port:       DefaultPort,
+		Domain:     DefaultDomain,
 		EnableIPv6: false,
 	}
 }

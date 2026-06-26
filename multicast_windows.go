@@ -11,13 +11,13 @@ import (
 // Windows multicast socket option constants (from winsock2.h / ws2ipdef.h).
 // These are not defined in Go's syscall package for Windows.
 const (
-	winIP_MULTICAST_IF      = 9  // IP_MULTICAST_IF
-	winIP_MULTICAST_TTL     = 10
-	winIP_MULTICAST_LOOP    = 11
-	winIP_ADD_MEMBERSHIP    = 12
-	winIPV6_MULTICAST_HOPS  = 10 // IPV6_MULTICAST_HOPS
-	winIPV6_MULTICAST_LOOP  = 11 // IPV6_MULTICAST_LOOP
-	winIPV6_ADD_MEMBERSHIP  = 12 // IPV6_JOIN_GROUP
+	winIP_MULTICAST_IF     = 9 // IP_MULTICAST_IF
+	winIP_MULTICAST_TTL    = 10
+	winIP_MULTICAST_LOOP   = 11
+	winIP_ADD_MEMBERSHIP   = 12
+	winIPV6_MULTICAST_HOPS = 10 // IPV6_MULTICAST_HOPS
+	winIPV6_MULTICAST_LOOP = 11 // IPV6_MULTICAST_LOOP
+	winIPV6_ADD_MEMBERSHIP = 12 // IPV6_JOIN_GROUP
 )
 
 // applyMulticastOptions sets socket options needed for mDNS on Windows.
