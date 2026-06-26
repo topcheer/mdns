@@ -923,3 +923,50 @@ func newTestServer() *Server {
 func hasSuffix(s, suffix string) bool {
 	return len(s) >= len(suffix) && s[len(s)-len(suffix):] == suffix
 }
+
+// --- IsTruncated ---
+
+func TestMessageIsTruncated(t *testing.T) {
+	msg := &Message{Header: Header{Flags: 0}}
+	if msg.IsTruncated() {
+		t.Error("expected false for flags=0")
+	}
+
+	msg.Flags = flagTruncation
+	if !msg.IsTruncated() {
+		t.Error("expected true when TC bit set")
+	}
+
+	msg.Flags = flagResponse | flagTruncation
+	if !msg.IsTruncated() {
+		t.Error("expected true when TC+QR bits set")
+	}
+}
+
+// --- incrementNameSuffix ---
+
+func TestIncrementNameSuffix(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain name", "MyService", "MyService (2)"},
+		{"first increment", "Printer", "Printer (2)"},
+		{"existing (2)", "Printer (2)", "Printer (3)"},
+		{"existing (3)", "Printer (3)", "Printer (4)"},
+		{"existing (10)", "My Service (10)", "My Service (11)"},
+		{"name with parens but no number", "test (abc)", "test (abc) (2)"},
+		{"name with parens but (1)", "test (1)", "test (1) (2)"}, // num < 2, no match
+		{"empty string", "", " (2)"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := incrementNameSuffix(tt.input)
+			if got != tt.want {
+				t.Errorf("incrementNameSuffix(%q): got %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
