@@ -39,6 +39,12 @@ type MulticastConn struct {
 	packets chan ReceivedPacket // channel for incoming packets
 	closed  atomic.Bool
 	wg      sync.WaitGroup
+
+	// Runtime send-failure detection.
+	// Tracks consecutive "no route to host" errors to detect VPN-corrupted
+	// multicast routes that appear after startup.
+	sendFailures atomic.Int32
+	warnFn       WarningFunc // set by Server
 }
 
 // NewMulticastConn creates a multicast connection listening on the given port.
@@ -155,7 +161,13 @@ func (mc *MulticastConn) Packets() <-chan ReceivedPacket {
 
 // WriteMulticastV4 sends data to the IPv4 multicast group.
 func (mc *MulticastConn) WriteMulticastV4(data []byte) (int, error) {
-	return mc.v4conn.WriteToUDP(data, mc.groupV4)
+	n, err := mc.v4conn.WriteToUDP(data, mc.groupV4)
+	if err != nil && isRouteError(err) {
+		mc.trackSendFailure()
+	} else {
+		mc.sendFailures.Store(0)
+	}
+	return n, err
 }
 
 // WriteMulticastV6 sends data to the IPv6 multicast group.
@@ -166,7 +178,31 @@ func (mc *MulticastConn) WriteMulticastV6(data []byte) (int, error) {
 	return mc.v6conn.WriteToUDP(data, mc.groupV6)
 }
 
-// WriteMulticast sends to all enabled multicast groups.
+// isRouteError returns true if the error indicates a broken multicast route.
+func isRouteError(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "no route to host") ||
+		strings.Contains(s, "network is unreachable")
+}
+
+// trackSendFailure increments the failure counter and fires a warning
+// (once) when the threshold is reached.
+func (mc *MulticastConn) trackSendFailure() {
+	count := mc.sendFailures.Add(1)
+	if count == 3 && mc.warnFn != nil {
+		mc.warnFn(Warning{
+			Code:    "multicast_route_broken",
+			Message: "multicast sends are failing — mDNS discovery and advertising will not work",
+			Hint:    "a VPN client may have corrupted the multicast route; check 'netstat -rn | grep 224' for RTF_REJECT, disconnect VPN or reboot",
+		})
+	}
+}
+
+// SetWarningFunc registers a callback for runtime warnings (e.g. send failures).
+// Called by Server.Start() after creating the MulticastConn.
+func (mc *MulticastConn) SetWarningFunc(fn WarningFunc) {
+	mc.warnFn = fn
+}
 func (mc *MulticastConn) WriteMulticast(data []byte) error {
 	if _, err := mc.WriteMulticastV4(data); err != nil {
 		return err

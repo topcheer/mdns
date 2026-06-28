@@ -99,6 +99,77 @@ config := mdns.Config{
 }
 ```
 
+## Logging and Warnings
+
+The library never writes to the terminal directly. All output is delivered
+through two optional callbacks in `Config`:
+
+### LogFunc — debug logging
+
+```go
+cfg := mdns.DefaultConfig()
+cfg.LogFunc = func(format string, args ...any) {
+    log.Printf("[mdns] "+format, args...)
+}
+```
+
+### WarningFunc — health alerts
+
+`WarningFunc` is called when the library detects a non-fatal issue that may
+affect functionality. The most common warning is `multicast_route_broken`,
+fired when the system's multicast route is corrupted (typically by a VPN).
+
+```go
+cfg := mdns.DefaultConfig()
+cfg.WarningFunc = func(w mdns.Warning) {
+    switch w.Code {
+    case "multicast_route_broken":
+        log.Printf("[mdns] WARNING: %s (%s)", w.Message, w.Hint)
+    }
+}
+```
+
+If `WarningFunc` is nil, warnings fall back to `LogFunc`. If both are nil,
+the library is completely silent.
+
+### Integration with popular logging frameworks
+
+```go
+// slog (Go 1.21+)
+cfg.LogFunc = func(format string, args ...any) {
+    slog.Debug(fmt.Sprintf(format, args...))
+}
+cfg.WarningFunc = func(w mdns.Warning) {
+    slog.Warn(w.Message, "code", w.Code, "hint", w.Hint)
+}
+
+// zap
+cfg.LogFunc = func(format string, args ...any) {
+    logger.Debug(fmt.Sprintf(format, args...))
+}
+cfg.WarningFunc = func(w mdns.Warning) {
+    logger.Warn(w.Message, zap.String("code", w.Code), zap.String("hint", w.Hint))
+}
+
+// logrus
+cfg.LogFunc = func(format string, args ...any) {
+    logrus.Debugf(format, args...)
+}
+cfg.WarningFunc = func(w mdns.Warning) {
+    logrus.WithField("code", w.Code).Warn(w.Message)
+}
+```
+
+### Manual health check
+
+You can also check multicast route health before starting a server:
+
+```go
+if err := mdns.CheckMulticastRoute(); err != nil {
+    log.Printf("mDNS will not work: %v", err)
+}
+```
+
 ## API Reference
 
 ### Core Types

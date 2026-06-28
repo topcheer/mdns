@@ -86,6 +86,14 @@ func main() {
 		}
 	}
 
+	// Warnings are surfaced through the callback — the library never writes
+	// to the terminal directly. In the demo we print them; library users
+	// would route them to their own logging framework (zap, slog, logrus, etc.).
+	cfg.WarningFunc = func(w mdns.Warning) {
+		fmt.Fprintf(os.Stderr, "\n  WARNING [%s]\n  %s\n  -> %s\n\n",
+			w.Code, w.Message, w.Hint)
+	}
+
 	srv, err := mdns.NewServer(cfg)
 	mustNoErr(err)
 	mustNoErr(srv.Start())

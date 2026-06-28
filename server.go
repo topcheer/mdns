@@ -102,6 +102,9 @@ func (s *Server) Start() error {
 	}
 	s.conn = conn
 
+	// Wire the warning callback so runtime send failures are reported.
+	conn.SetWarningFunc(s.warn)
+
 	// Detect local IP addresses.
 	// Prefers the default-route interface to avoid advertising VPN/virtual
 	// adapter addresses (e.g. Docker, Hyper-V, WSL2, Radmin VPN).
@@ -129,6 +132,11 @@ func (s *Server) Start() error {
 
 	s.log("mDNS server started on port %d, hostname %s, %d local IPs",
 		s.config.Port, s.config.HostName, len(s.hostIPs))
+
+	// Check multicast route health after startup.
+	// If the route is broken (e.g. VPN corrupted the 224.0.0.0/4 route),
+	// warn the user so they can take action.
+	go s.checkMulticastHealth()
 
 	return nil
 }
@@ -281,6 +289,11 @@ func (s *Server) handleCacheMaintenance() {
 // --- packet handling ---
 
 func (s *Server) handlePacket(pkt ReceivedPacket) {
+	// Silently drop packets too short to be a valid DNS message (header is 12 bytes).
+	// These can come from health-check probes or network noise.
+	if len(pkt.Data) < 12 {
+		return
+	}
 	msg, err := UnpackMessage(pkt.Data)
 	if err != nil {
 		s.log("failed to parse packet from %s: %v", pkt.From, err)
@@ -910,6 +923,29 @@ func (s *Server) notifyRemoval(rr *ResourceRecord) {
 func (s *Server) log(format string, args ...any) {
 	if s.config.LogFunc != nil {
 		s.config.LogFunc(format, args...)
+	}
+}
+
+// warn delivers a warning to the configured WarningFunc, or falls back
+// to logging if WarningFunc is not set.
+func (s *Server) warn(w Warning) {
+	if s.config.WarningFunc != nil {
+		s.config.WarningFunc(w)
+		return
+	}
+	// Fall back to debug log.
+	s.log("WARNING [%s] %s — %s", w.Code, w.Message, w.Hint)
+}
+
+// checkMulticastHealth verifies that the system can send multicast packets.
+// Called asynchronously during Server.Start() to avoid blocking startup.
+func (s *Server) checkMulticastHealth() {
+	if err := CheckMulticastRoute(); err != nil {
+		s.warn(Warning{
+			Code:    "multicast_route_broken",
+			Message: "system cannot send multicast packets — mDNS discovery and advertising will not work",
+			Hint:    "check 'netstat -rn | grep 224' for a rejected (RTF_REJECT) or missing route; disconnect VPN clients (sing-box, Tailscale, Clash) or reboot",
+		})
 	}
 }
 

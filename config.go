@@ -40,10 +40,34 @@ type Config struct {
 	// LogFunc is called for debug logging. If nil, no logging is done.
 	LogFunc func(format string, args ...any)
 
+	// WarningFunc is called when the server detects a non-fatal issue
+	// that may affect functionality (e.g. broken multicast route caused
+	// by a VPN). If nil, warnings are logged via LogFunc (if set).
+	WarningFunc WarningFunc
+
 	// Interfaces restricts which network interfaces to use.
 	// If empty, all active multicast interfaces are used.
 	Interfaces []string
 }
+
+// Warning describes a non-fatal issue detected by the mDNS server.
+// Warnings are delivered via Config.WarningFunc.
+type Warning struct {
+	// Code is a machine-readable identifier for the warning.
+	// Known codes:
+	//   - "multicast_route_broken" — the system cannot send multicast packets
+	//     (commonly caused by VPN network extensions corrupting the 224.0.0.0/4 route).
+	Code string
+
+	// Message is a human-readable description of the issue.
+	Message string
+
+	// Hint is a suggested action to resolve the issue.
+	Hint string
+}
+
+// WarningFunc is a callback invoked when the server detects a non-fatal issue.
+type WarningFunc func(Warning)
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
