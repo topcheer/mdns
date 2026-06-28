@@ -187,6 +187,80 @@ Run on multiple terminals or machines — they discover each other automatically
 
 Pre-built binaries for all platforms are in [Releases](../../releases).
 
+## Troubleshooting
+
+### `sendto: no route to host` on multicast send
+
+mDNS sends UDP packets to `224.0.0.251` (IPv4 multicast). If the OS multicast
+route is missing or corrupted, all sends fail with this error.
+
+**Quick diagnosis:**
+
+```bash
+# Check for the 224.0.0.0/4 multicast route
+netstat -rn | grep 224
+
+# Healthy output looks like:
+#   224.0.0/4          link#12            UmCS                  en1
+#   224.0.0.251        1:0:5e:0:0:fb      UHmLWI                en1
+
+# If you see a "!" flag, the route is REJECT (broken):
+#   224.0.0/4          link#12            UmCS                  en1      !
+```
+
+**Common causes and fixes:**
+
+| Cause | How to fix |
+|---|---|
+| **VPN / network extension** (sing-box, Tailscale, Clash, WireGuard, etc.) installed a `RTF_REJECT` route over `224.0.0.0/4` | Disconnect or quit the VPN client. If the route persists after disconnect, reboot. |
+| **Missing multicast route** (some minimal Linux setups, Docker-only hosts) | `sudo route add -net 224.0.0.0/4 dev eth0` (Linux) or `sudo route add -net 224.0.0.0/4 -interface en0` (macOS) |
+| **Firewall blocking multicast** (pf, iptables, Windows Firewall, Little Snitch) | Allow outbound UDP to `224.0.0.0/4` on port 5353. On macOS: `sudo pfctl -d` temporarily to test. |
+| **Wrong interface selected** (machine has Docker / VM bridge adapters) | Pass `Config{Interfaces: []string{"en0"}}` to use a specific interface. |
+| **No active network interface** (Wi-Fi off, cable unplugged) | Connect to a network first. mDNS only works on active local links. |
+
+**macOS-specific: VPN network extensions corrupting multicast routes**
+
+VPN clients that use the NetworkExtension framework (sing-box, Tailscale,
+Clash with TUN mode, etc.) can install a reject route on `224.0.0.0/4` that
+persists even after the VPN is disconnected. This is a known macOS issue.
+
+```bash
+# Verify the reject flag
+netstat -rn | grep "224.0.0/4"
+# If you see "!" at the end, the route is rejected
+
+# Fix option 1: Reboot (cleanest)
+sudo reboot
+
+# Fix option 2: Manually delete and re-add the route
+sudo route delete 224.0.0.0/4
+sudo route add -net 224.0.0.0/4 -interface en0
+```
+
+**Linux-specific: missing multicast route on headless / container hosts**
+
+```bash
+# Add persistent multicast route
+sudo ip route add 224.0.0.0/4 dev eth0
+
+# Verify
+ip route show | grep 224
+```
+
+### Service not discovered by peers
+
+- Ensure both machines are on the **same L2 network** (same switch / Wi-Fi).
+  mDNS multicast does not cross subnets without an mDNS reflector (e.g. Avahi `reflector`).
+- Check that **port 5353 UDP** is not blocked by a firewall on either machine.
+- If using a custom port via `Config.Port`, all peers must use the same port.
+- Run with `-log` flag (`./mdns-demo -log`) to see debug output.
+
+### Multiple instances on the same machine
+
+Each instance automatically generates a unique hostname (`hostname-<PID>`),
+so running multiple `mdns-demo` processes in different terminals works
+out of the box. They will discover each other via multicast loopback.
+
 ## Architecture
 
 ```
